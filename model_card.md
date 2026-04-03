@@ -1,147 +1,135 @@
 # DocuBot Model Card
 
-This model card is a short reflection on your DocuBot system. Fill it out after you have implemented retrieval and experimented with all three modes:
+This model card summarizes the current DocuBot behavior across three modes:
 
-1. Naive LLM over full docs  
-2. Retrieval only  
+1. Naive LLM over full docs
+2. Retrieval only
 3. RAG (retrieval plus LLM)
-
-Use clear, honest descriptions. It is fine if your system is imperfect.
 
 ---
 
 ## 1. System Overview
 
 **What is DocuBot trying to do?**  
-Describe the overall goal in 2 to 3 sentences.
-
-> _Your answer here._
+DocuBot helps developers answer project documentation questions using local docs in the docs folder. It supports retrieval only and retrieval augmented generation (RAG), with an explicit refusal policy when evidence is weak.
 
 **What inputs does DocuBot take?**  
-For example: user question, docs in folder, environment variables.
-
-> _Your answer here._
+- User question text  
+- Markdown and text files in docs  
+- Optional GEMINI_API_KEY for LLM modes
 
 **What outputs does DocuBot produce?**
-
-> _Your answer here._
+- Mode 1: free form LLM answer  
+- Mode 2: retrieved snippets (or refusal)  
+- Mode 3: grounded LLM answer from retrieved snippets (or refusal)
 
 ---
 
 ## 2. Retrieval Design
 
 **How does your retrieval system work?**  
-Describe your choices for indexing and scoring.
-
-- How do you turn documents into an index?
-- How do you score relevance for a query?
-- How do you choose top snippets?
-
-> _Your answer here._
+- Documents are split into paragraph like sections using blank lines.  
+- Retrieval units are section sized chunks labeled like FILE.md (section N).  
+- A small inverted index maps normalized tokens to section labels.  
+- Query and section scoring use exact token matches with lightweight normalization (for example users and user map together).  
+- Query tokens are filtered by a stopword list before evidence checks.  
+- Top sections are chosen by score descending.
 
 **What tradeoffs did you make?**  
-For example: speed vs precision, simplicity vs accuracy.
-
-> _Your answer here._
+I prioritized simple and readable Python over advanced ranking. This makes behavior easy to reason about, but it still misses semantic matches and can be sensitive to phrasing.
 
 ---
 
 ## 3. Use of the LLM (Gemini)
 
-**When does DocuBot call the LLM and when does it not?**  
-Briefly describe how each mode behaves.
-
-- Naive LLM mode:
-- Retrieval only mode:
-- RAG mode:
-
-> _Your answer here._
+**When does DocuBot call the LLM and when does it not?**
+- Naive LLM mode: always calls the LLM directly, without retrieval evidence.  
+- Retrieval only mode: never calls the LLM.  
+- RAG mode: calls retrieval first, then calls the LLM only if evidence is meaningful.
 
 **What instructions do you give the LLM to keep it grounded?**  
-Summarize the rules from your prompt. For example: only use snippets, say "I do not know" when needed, cite files.
-
-> _Your answer here._
+The prompt says to answer only from provided snippets, refuse with exactly "I do not know based on the docs I have." when evidence is insufficient, and mention source files when answering.
 
 ---
 
 ## 4. Experiments and Comparisons
 
-Run the **same set of queries** in all three modes. Fill in the table with short notes.
-
-You can reuse or adapt the queries from `dataset.py`.
+All comparisons below used identical wording for each query across modes.
 
 | Query | Naive LLM: helpful or harmful? | Retrieval only: helpful or harmful? | RAG: helpful or harmful? | Notes |
 |------|---------------------------------|--------------------------------------|---------------------------|-------|
-| Example: Where is the auth token generated? | | | | |
-| Example: How do I connect to the database? | | | | |
-| Example: Which endpoint lists all users? | | | | |
-| Example: How does a client refresh an access token? | | | | |
+| Which endpoint lists all users? | Harmful: confident generic REST answer, not doc specific | Helpful but hard to interpret: returns relevant fragments | Helpful: concise grounded answer with file evidence | Good example where RAG balances clarity and evidence better than mode 2 |
+| Maybe its time for me to take a break now | Harmful: confident advice unrelated to docs | Helpful: now correctly refuses | Helpful: correctly refuses | This was a key guardrail regression that was fixed |
+| How does a client refresh an access token? | Harmful: long OAuth tutorial not supported by docs | Mixed: gives token related snippets, but not a direct refresh flow | Mixed or failed: one run refused, another run failed due API quota error | RAG still has failure modes from limited evidence and external quota limits |
+| What environment variables are required for authentication? | Harmful: generic cloud auth variables not doc specific | Mixed: relevant section headers, not very actionable | Mixed: refused in observed run due conservative evidence gate | Demonstrates precision vs recall tension in refusal thresholds |
 
-**What patterns did you notice?**  
-
-- When does naive LLM look impressive but untrustworthy?  
-- When is retrieval only clearly better?  
-- When is RAG clearly better than both?
-
-> _Your answer here._
+**What patterns did you notice?**
+- Naive mode often sounds high quality while inventing details not present in project docs.
+- Retrieval only mode is often evidence correct, but users must manually synthesize snippets.
+- RAG is best when retrieval contains a clear answer chunk, but can be too conservative if evidence is fragmented.
 
 ---
 
 ## 5. Failure Cases and Guardrails
 
-**Describe at least two concrete failure cases you observed.**  
-For each one, say:
+**Describe at least two concrete failure cases you observed.**
 
-- What was the question?  
-- What did the system do?  
-- What should have happened instead?
+Failure case 1:  
+Question: Maybe its time for me to take a break now  
+Observed: retrieval only initially returned unrelated auth and API snippets.  
+Expected: refusal.
 
-> _Failure case 1 here._
+Failure case 2:  
+Question: Which endpoint lists all users?  
+Observed: RAG initially refused because guardrail checked only the top snippet instead of any retrieved snippet.  
+Expected: answer from relevant API snippet.
 
-> _Failure case 2 here._
+Failure case 3:  
+Question: How does a client refresh an access token?  
+Observed: RAG run hit Gemini quota limit (429 RESOURCE_EXHAUSTED).  
+Expected: graceful handling or retry message, not a traceback.
 
-**When should DocuBot say “I do not know based on the docs I have”?**  
-Give at least two specific situations.
+**When should DocuBot say “I do not know based on the docs I have”?**
+- When no section has enough query token overlap.  
+- When query terms are too generic or off topic relative to docs.  
+- When retrieval only finds weak heading level matches without answer content.
 
-> _Your answer here._
-
-**What guardrails did you implement?**  
-Examples: refusal rules, thresholds, limits on snippets, safe defaults.
-
-> _Your answer here._
+**What guardrails did you implement?**
+- Section level retrieval instead of whole document retrieval.  
+- Exact token scoring instead of substring counting.  
+- Stopword filtering for evidence decisions.  
+- Lightweight token normalization for singular and plural matching.  
+- Explicit meaningful evidence check before retrieval only or RAG answers.  
+- Refusal default: "I do not know based on these docs." when evidence is weak.
 
 ---
 
 ## 6. Limitations and Future Improvements
 
-**Current limitations**  
-List at least three limitations of your DocuBot system.
+**Current limitations**
+1. Token overlap retrieval is still lexical and misses semantic similarity.
+2. Ranking quality is limited; some heading snippets outrank better answer snippets.
+3. RAG mode currently does not gracefully handle external LLM quota errors.
 
-1. _Limitation 1_
-2. _Limitation 2_
-3. _Limitation 3_
-
-**Future improvements**  
-List two or three changes that would most improve reliability or usefulness.
-
-1. _Improvement 1_
-2. _Improvement 2_
-3. _Improvement 3_
+**Future improvements**
+1. Add BM25 or embedding based retrieval for better relevance ranking.
+2. Add section level metadata and confidence scores in outputs.
+3. Add robust LLM error handling and fallback responses for 429 and network failures.
 
 ---
 
 ## 7. Responsible Use
 
 **Where could this system cause real world harm if used carelessly?**  
-Think about wrong answers, missing information, or over trusting the LLM.
+Users may trust fluent but unsupported answers in naive mode, especially for security, authentication, or operational decisions.
 
-> _Your answer here._
-
-**What instructions would you give real developers who want to use DocuBot safely?**  
-Write 2 to 4 short bullet points.
-
-- _Guideline 1_
-- _Guideline 2_
-- _Guideline 3 (optional)_
+**What instructions would you give real developers who want to use DocuBot safely?**
+- Prefer retrieval only or RAG over naive mode for factual questions.  
+- Treat unsupported confident answers as suspect until verified in docs.  
+- Keep refusal behavior enabled; do not force answers when evidence is weak.  
+- Validate critical security and production decisions against source documentation.
 
 ---
+
+## TF Summary
+The core concept students need to understand is how the three modes work and understanding the overall system like reading the documents in the docs directory. A lot of the difficulty comes from ambiguity, especially when a query uses common words that can create weak matches, so students have to learn the difference between surface overlap and real evidence in the docs. That is where mode 2 can be tricky, because retrieval may look convincing even when the snippets are only loosely related or matched by common terms rather than actual answer content. AI was helpful when it has a clear plan and specific examples to work from, but vague prompts usually led to generic or overconfident responses that did not help much. If I were guiding a student, I would walk them through a few examples from each mode and ask them to track exactly what each mode returned and why. From there, they could identify where the issue is and see how the retrieval logic succeeds or fails.
